@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from hass_client.exceptions import FailedCommand
-from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -41,6 +41,8 @@ if TYPE_CHECKING:
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+
+    from .provider import HomeAssistantPlayerProvider
 
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
@@ -86,6 +88,10 @@ class HomeAssistantPlayer(Player):
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+        if MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features:
+            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
+        if MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features:
+            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         if MediaPlayerEntityFeature.MEDIA_ANNOUNCE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
         hass_domain = extra_player_data.get("hass_domain")
@@ -231,6 +237,22 @@ class HomeAssistantPlayer(Player):
         await self.hass.call_service(
             domain="media_player",
             service="turn_on" if powered else "turn_off",
+            target={"entity_id": self.player_id},
+        )
+
+    async def next_track(self) -> None:
+        """Handle NEXT_TRACK command on the player."""
+        await self.hass.call_service(
+            domain="media_player",
+            service="media_next_track",
+            target={"entity_id": self.player_id},
+        )
+
+    async def previous_track(self) -> None:
+        """Handle PREVIOUS_TRACK command on the player."""
+        await self.hass.call_service(
+            domain="media_player",
+            service="media_previous_track",
             target={"entity_id": self.player_id},
         )
 
@@ -385,3 +407,64 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
                 else:
                     self._attr_group_members.clear()
+
+        # Check for external playback (not from Music Assistant)
+        # We detect external playback by checking if HA reports media info
+        # but the content_id doesn't match our stream URL
+        media_title = attributes.get("media_title")
+        media_content_id = attributes.get("media_content_id", "")
+
+        # Determine if this is Music Assistant playback (content_id starts with our stream URL)
+        is_ma_playback = bool(
+            media_content_id and media_content_id.startswith(self.mass.streams.base_url)
+        )
+
+        # Determine if this is external playback:
+        # - Player is actively playing
+        # - HA provides media_title (something is playing)
+        # - Content is NOT from Music Assistant
+        is_external_playback = (
+            self.playback_state == PlaybackState.PLAYING and media_title and not is_ma_playback
+        )
+
+        if is_external_playback:
+            # External playback detected - set current_media from HA attributes
+            current_media = PlayerMedia(
+                uri=media_content_id or "external",
+                media_type=MediaType.TRACK,
+                title=media_title,
+                artist=attributes.get("media_artist"),
+                album=attributes.get("media_album_name"),
+                image_url=self._get_image_url(attributes),
+                duration=int(attributes.get("media_duration", 0) or 0) or None,
+            )
+            self._attr_current_media = current_media
+            # Use app_name as source if available, otherwise "external"
+            # Do NOT use player_id as that would indicate MA queue playback
+            self._attr_active_source = attributes.get("app_name") or "external"
+        elif is_ma_playback:
+            # MA playback - ensure active_source points to player_id for queue lookup
+            # The actual current_media will be set by MA's queue controller via set_current_media
+            self._attr_active_source = self.player_id
+        elif self.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED):
+            # Not playing - clear external media if it was set
+            # Only clear if active_source was external (don't clear MA queue media)
+            if self._attr_active_source and self._attr_active_source not in (
+                self.player_id,
+                None,
+            ):
+                self._attr_current_media = None
+                self._attr_active_source = None
+
+    def _get_image_url(self, attributes: dict[str, Any]) -> str | None:
+        """Get the image URL from the attributes."""
+        if entity_picture := attributes.get("entity_picture"):
+            entity_picture = str(entity_picture)
+            if entity_picture.startswith("http"):
+                return entity_picture
+            # Get the HA URL from the hass provider config
+            # Access via provider -> hass_prov -> config
+            prov = cast("HomeAssistantPlayerProvider", self.provider)
+            ha_url = str(prov.hass_prov.config.get_value("url")).rstrip("/")
+            return f"{ha_url}{entity_picture}"
+        return None

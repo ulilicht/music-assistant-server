@@ -7,7 +7,14 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 
 from hass_client.exceptions import FailedCommand
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.enums import (
+    ImageType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
+from music_assistant_models.media_items import MediaItemImage
 
 from music_assistant.constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -462,9 +469,18 @@ class HomeAssistantPlayer(Player):
             entity_picture = str(entity_picture)
             if entity_picture.startswith("http"):
                 return entity_picture
-            # Get the HA URL from the hass provider config
-            # Access via provider -> hass_prov -> config
+
+            # Access via provider -> hass_prov
             prov = cast("HomeAssistantPlayerProvider", self.provider)
-            ha_url = str(prov.hass_prov.config.get_value("url")).rstrip("/")
-            return f"{ha_url}{entity_picture}"
+
+            # Use proxy for internal HA images
+            # We create a MediaItemImage with the hass provider as source
+            # This will trigger resolve_image on the hass provider when requested
+            image = MediaItemImage(
+                type=ImageType.THUMB,
+                path=entity_picture,
+                provider=prov.hass_prov.instance_id,
+                remotely_accessible=False,
+            )
+            return self.mass.metadata.get_image_url(image)
         return None

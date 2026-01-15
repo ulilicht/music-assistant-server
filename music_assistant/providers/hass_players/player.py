@@ -423,9 +423,7 @@ class HomeAssistantPlayer(Player):
         # We detect external playback by checking if HA reports media info
         # but the content_id doesn't match our stream URL
 
-        # Use merged attributes for this check to ensure we have all data
         attributes = self._hass_attributes
-
         media_title = attributes.get("media_title")
         media_content_id = attributes.get("media_content_id", "")
 
@@ -470,7 +468,7 @@ class HomeAssistantPlayer(Player):
                         name=source_id,
                         passive=True,
                         can_next_previous=PlayerFeature.NEXT_PREVIOUS in self.supported_features,
-                        can_play_pause=True,
+                        can_play_pause=PlayerFeature.PAUSE in self.supported_features,
                     )
                 )
         elif is_ma_playback:

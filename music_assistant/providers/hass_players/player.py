@@ -117,6 +117,7 @@ class HomeAssistantPlayer(Player):
             self._attr_powered = hass_state["state"] not in OFF_STATES
 
         self.extra_data["hass_supported_features"] = hass_supported_features
+        self._hass_attributes: dict[str, Any] = {}
         self._update_attributes(hass_state["attributes"])
 
     async def get_config_entries(
@@ -382,6 +383,8 @@ class HomeAssistantPlayer(Player):
 
     def _update_attributes(self, attributes: dict[str, Any]) -> None:
         """Update Player attributes from HA state attributes."""
+        self._hass_attributes.update(attributes)
+
         # process optional attributes - these may not be present in all states
         for key, value in attributes.items():
             if key == "friendly_name":
@@ -418,6 +421,10 @@ class HomeAssistantPlayer(Player):
         # Check for external playback (not from Music Assistant)
         # We detect external playback by checking if HA reports media info
         # but the content_id doesn't match our stream URL
+
+        # Use merged attributes for this check to ensure we have all data
+        attributes = self._hass_attributes
+
         media_title = attributes.get("media_title")
         media_content_id = attributes.get("media_content_id", "")
 
@@ -431,7 +438,9 @@ class HomeAssistantPlayer(Player):
         # - HA provides media_title (something is playing)
         # - Content is NOT from Music Assistant
         is_external_playback = (
-            self.playback_state == PlaybackState.PLAYING and media_title and not is_ma_playback
+            self.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and media_title
+            and not is_ma_playback
         )
 
         if is_external_playback:
@@ -453,7 +462,7 @@ class HomeAssistantPlayer(Player):
             # MA playback - ensure active_source points to player_id for queue lookup
             # The actual current_media will be set by MA's queue controller via set_current_media
             self._attr_active_source = self.player_id
-        elif self.playback_state in (PlaybackState.IDLE, PlaybackState.PAUSED):
+        elif self.playback_state == PlaybackState.IDLE:
             # Not playing - clear external media if it was set
             # Only clear if active_source was external (don't clear MA queue media)
             if self._attr_active_source and self._attr_active_source not in (

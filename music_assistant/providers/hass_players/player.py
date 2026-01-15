@@ -30,7 +30,7 @@ from music_assistant.constants import (
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.hass.constants import (
     OFF_STATES,
@@ -95,9 +95,10 @@ class HomeAssistantPlayer(Player):
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         if MediaPlayerEntityFeature.VOLUME_MUTE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
-        if MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features:
-            self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
-        if MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features:
+        if (
+            MediaPlayerEntityFeature.PREVIOUS_TRACK in hass_supported_features
+            or MediaPlayerEntityFeature.NEXT_TRACK in hass_supported_features
+        ):
             self._attr_supported_features.add(PlayerFeature.NEXT_PREVIOUS)
         if MediaPlayerEntityFeature.MEDIA_ANNOUNCE in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
@@ -445,9 +446,11 @@ class HomeAssistantPlayer(Player):
 
         if is_external_playback:
             # External playback detected - set current_media from HA attributes
+            ha_content_type = attributes.get("media_content_type", "")
+            media_type = MediaType.RADIO if ha_content_type == "radio" else MediaType.UNKNOWN
             current_media = PlayerMedia(
                 uri=media_content_id or "external",
-                media_type=MediaType.TRACK,
+                media_type=media_type,
                 title=media_title,
                 artist=attributes.get("media_artist"),
                 album=attributes.get("media_album_name"),
@@ -457,7 +460,19 @@ class HomeAssistantPlayer(Player):
             self._attr_current_media = current_media
             # Use app_name as source if available, otherwise "external"
             # Do NOT use player_id as that would indicate MA queue playback
-            self._attr_active_source = attributes.get("app_name") or "external"
+            source_id = attributes.get("app_name") or "external"
+            self._attr_active_source = source_id
+            # Ensure this source is in source_list so commands work
+            if not any(x.id == source_id for x in self._attr_source_list):
+                self._attr_source_list.append(
+                    PlayerSource(
+                        id=source_id,
+                        name=source_id,
+                        passive=True,
+                        can_next_previous=PlayerFeature.NEXT_PREVIOUS in self.supported_features,
+                        can_play_pause=True,
+                    )
+                )
         elif is_ma_playback:
             # MA playback - ensure active_source points to player_id for queue lookup
             # The actual current_media will be set by MA's queue controller via set_current_media
